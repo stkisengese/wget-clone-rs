@@ -9,7 +9,7 @@ lazy_static::lazy_static! {
 }
 
 /// Initialize the logger for background downloads
-pub fn init_background_logger() -> std::io::Result<()> {
+pub fn _init_background_logger() -> std::io::Result<()> {
     let file = OpenOptions::new()
         .create(true)
         .write(true)
@@ -30,6 +30,18 @@ pub fn log_message(message: &str, background: bool) {
         }
     } else {
         println!("{}", message);
+    }
+}
+
+/// Log a blank line to the appropriate output
+pub fn log_blank_line(background: bool) {
+    if background {
+        if let Some(file) = &mut *LOG_FILE.lock().unwrap() {
+            let _ = writeln!(file);
+            let _ = file.flush();
+        }
+    } else {
+        println!();
     }
 }
 

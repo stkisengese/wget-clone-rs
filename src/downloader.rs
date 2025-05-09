@@ -1,5 +1,5 @@
 use crate::cli::{WgetArgs, parse_rate_limit};
-use crate::logger::{log_message, format_file_size};
+use crate::logger::{log_message, log_blank_line, format_file_size};
 use crate::progress::{create_progress_bar, format_progress};
 use futures::StreamExt;
 use reqwest::Client;
@@ -16,12 +16,12 @@ pub async fn download_file(url: &str, args: &WgetArgs) -> Result<(), Box<dyn Err
     let client = Client::new();
     
     // Send the request
-    log_message(&format!("sending request, awaiting response..."), args.background);
+    let msg = "sending request, awaiting response...";
     let response = client.get(url).send().await?;
     
     // Check status
     let status = response.status();
-    log_message(&format!("status {}", status), args.background);
+    log_message(&format!("{msg} status {}", status), args.background);
     
     if !status.is_success() {
         return Err(format!("Failed to download: {}", status).into());
@@ -111,7 +111,7 @@ pub async fn download_file(url: &str, args: &WgetArgs) -> Result<(), Box<dyn Err
     }
     
     progress_bar.finish();
-    
+    log_blank_line(args.background);
     log_message(&format!("Downloaded [{}]", url), args.background);
     
     Ok(())
