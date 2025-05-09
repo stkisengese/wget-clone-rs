@@ -14,9 +14,14 @@ use regex::Regex;
 use tokio::sync::Semaphore;
 use async_recursion::async_recursion;
 use std::sync::{Arc, Mutex};
+use futures::future::join_all;
+use tokio::time::timeout;
+use std::time::Duration;
 
 // Maximum concurrent connections
 const MAX_CONCURRENT_REQUESTS: usize = 10;
+// Connection timeout in seconds
+const CONNECTION_TIMEOUT: u64 = 30;
 
 /// Main function to mirror a website
 pub async fn mirror_website(args: &WgetArgs) -> Result<(), Box<dyn Error>> {
@@ -36,7 +41,7 @@ pub async fn mirror_website(args: &WgetArgs) -> Result<(), Box<dyn Error>> {
     }
     
     log_message(&format!("Mirroring website: {}", url), args.background);
-    log_message(&format!("Output directory: {}", output_dir.display()), args.background);
+    log_message(&format!("Output directory: {}", domain), args.background);
     
     // Parse reject patterns
     let reject_patterns = if let Some(reject) = &args.reject {
@@ -55,8 +60,10 @@ pub async fn mirror_website(args: &WgetArgs) -> Result<(), Box<dyn Error>> {
     log_message(&format!("Reject patterns: {:?}", reject_patterns), args.background);
     log_message(&format!("Exclude paths: {:?}", exclude_paths), args.background);
     
-    // Create a HTTP client
-    let client = Client::new();
+    // Create a HTTP client with timeout
+    let client = Client::builder()
+        .timeout(Duration::from_secs(CONNECTION_TIMEOUT))
+        .build()?;
     
     // Keep track of visited URLs
     let visited = Arc::new(Mutex::new(HashSet::new()));
@@ -73,11 +80,19 @@ pub async fn mirror_website(args: &WgetArgs) -> Result<(), Box<dyn Error>> {
     spinner.set_message("Mirroring website...");
 
     let downloaded_files = Arc::new(Mutex::new(Vec::new()));
+    let tasks = Arc::new(Mutex::new(Vec::new()));
 
-    while let Some((url, dir_path)) = {
-        let mut queue_lock = queue.lock().unwrap();
-        queue_lock.pop_front()
-    } {
+    // Process queue until empty
+    while !queue.lock().unwrap().is_empty() {
+        // Get next URL from queue
+        let (url, dir_path) = {
+            let mut queue_lock = queue.lock().unwrap();
+            match queue_lock.pop_front() {
+                Some(item) => item,
+                None => break,
+            }
+        };
+        
         // Skip if we've already visited this URL
         let url_string = url.to_string();
         {
@@ -114,30 +129,70 @@ pub async fn mirror_website(args: &WgetArgs) -> Result<(), Box<dyn Error>> {
         let convert_links = args.convert_links;
         
         // Spawn a task to process this URL
-        tokio::spawn(async move {
-            let result = process_url(
-                &client_clone,
-                &url,
-                &dir_path,
-                &base_url_clone,
-                &reject_patterns_clone,
-                &exclude_paths_clone,
-                visited_clone.clone(),
-                queue_clone,
-                convert_links,
-                downloaded_files_clone,
+        let task = tokio::spawn(async move {
+            // Use timeout for the request
+            let result = timeout(
+                Duration::from_secs(CONNECTION_TIMEOUT),
+                process_url(
+                    &client_clone,
+                    &url,
+                    &dir_path,
+                    &base_url_clone,
+                    &reject_patterns_clone,
+                    &exclude_paths_clone,
+                    visited_clone.clone(),
+                    queue_clone,
+                    convert_links,
+                    downloaded_files_clone,
+                )
             ).await;
             
-            if let Err(e) = result {
-                log_message(&format!("Error processing {}: {}", url, e), background);
+            match result {
+                Ok(Ok(_)) => {},
+                Ok(Err(e)) => {
+                    log_message(&format!("Error processing {}: {}", url, e), background);
+                },
+                Err(_) => {
+                    log_message(&format!("Timeout processing {}", url), background);
+                }
             }
             
             // Explicitly drop the permit when we're done
             drop(permit);
         });
+        
+        // Store the task handle
+        tasks.lock().unwrap().push(task);
+        
+        // If we have too many tasks, wait for some to complete
+        if tasks.lock().unwrap().len() >= MAX_CONCURRENT_REQUESTS * 2 {
+            let tasks_to_await = {
+                let mut tasks_lock = tasks.lock().unwrap();
+                let drain_count = tasks_lock.len() / 2;
+                tasks_lock.drain(0..drain_count).collect::<Vec<_>>()
+            };
+            
+            // Wait for the tasks to complete
+            for task_result in join_all(tasks_to_await).await {
+                if let Err(e) = task_result {
+                    log_message(&format!("Task error: {}", e), args.background);
+                }
+            }
+        }
     }
     
-    // Wait for all tasks to complete
+    // Wait for all remaining tasks to complete
+    let remaining_tasks = {
+        let mut tasks_lock = tasks.lock().unwrap();
+        std::mem::take(&mut *tasks_lock)
+    };
+    
+    for task_result in join_all(remaining_tasks).await {
+        if let Err(e) = task_result {
+            log_message(&format!("Task error: {}", e), args.background);
+        }
+    }
+    
     spinner.finish_with_message("Mirroring completed!");
     
     // If convert_links is enabled, update all the links in the downloaded files
