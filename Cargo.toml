@@ -2,5 +2,24 @@
 name = "wget"
 version = "0.1.0"
 edition = "2024"
+authors = ["Ann, Raymond, Stephen & Swabri"]
+description = "A wget clone implemented in Rust"
 
 [dependencies]
+clap = { version = "4.4", features = ["derive"] }  # Command line argument parsing
+reqwest = { version = "0.11", features = ["json", "stream", "blocking"] }  # HTTP client
+tokio = { version = "1", features = ["full"] }  # Async runtime
+futures = "0.3"  # Async utilities
+indicatif = "0.17"  # Progress bars
+chrono = "0.4"  # Time formatting
+url = "2.4"  # URL parsing
+scraper = "0.17"  # HTML parsing
+regex = "1.9"  # Regular expressions
+pathdiff = "0.2"  # Computing relative paths
+lazy_static = "1.4"  # Lazy static initialization
+thiserror = "1.0"  # Error handling
+log = "0.4"  # Logging
+bytes = "1.4"  # Byte manipulation
+mime = "0.3"  # MIME type detection
+tokio-util = { version = "0.7", features = ["codec"] }  # Utilities for tokio
+async-recursion = "1.0"  # Support for async recursive functions
