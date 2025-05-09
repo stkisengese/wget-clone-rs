@@ -1,0 +1,139 @@
+# Team Guide: Adding Flags to wget
+
+This guide explains how to add new flags to our wget project. I've set up the project structure and implemented the `--mirror` flag and its variants. Here's how you can integrate your own flag implementations.
+
+## Project Structure
+
+```
+wget/
+├── Cargo.toml
+├── src/
+│   ├── main.rs        # Main entry point
+│   ├── cli.rs         # Command line argument parsing
+│   ├── downloader.rs  # Core download functionality
+│   ├── mirror.rs      # Website mirroring functionality (my part)
+│   ├── logger.rs      # Logging and output formatting
+│   └── progress.rs    # Progress bar implementation
+└── README.md
+```
+
+## How to Add Your Flags
+
+### 1. Add Your Flag to `cli.rs`
+
+The `WgetArgs` struct in `cli.rs` is where all command-line arguments are defined. Add your flag here:
+
+```rust
+// Example for adding a new flag
+#[arg(long = "your-flag-name", short = 'y')]
+pub your_flag: bool,
+
+// For flags that take values
+#[arg(long = "your-value-flag")]
+pub your_value_flag: Option<String>,
+```
+
+### 2. Add Logic in `main.rs`
+
+The `main.rs` file contains the main flow of the program. Add your flag handling in the appropriate place:
+
+```rust
+// Example for adding a new flag handler in main.rs
+match &args {
+    // Your existing flag handling
+    args if args.your_flag => {
+        your_module::your_function(args).await?;
+    },
+    // ...existing code...
+}
+```
+
+### 3. Implement Your Functionality
+
+You can either:
+1. Add your functionality to an existing module like `downloader.rs`
+2. Create a new module for your flag if it's complex enough
+
+#### Adding to Existing Module
+
+```rust
+// In downloader.rs
+pub async fn your_function(args: &WgetArgs) -> Result<(), Box<dyn Error>> {
+    // Your implementation here
+    Ok(())
+}
+```
+
+#### Creating a New Module
+
+If your flag requires substantial functionality, create a new module file:
+
+1. Create a new file `src/your_module.rs`
+2. Add your implementation in that file
+3. Add `mod your_module;` at the top of `main.rs`
+
+## Integration Points
+
+### Logger Module
+
+Use the logger module for consistent output formatting:
+
+```rust
+use crate::logger::{log_message, log_start_time, log_finish_time};
+
+// Example usage
+log_message(&format!("Your message here"), args.background);
+```
+
+### Progress Bar
+
+Use the progress module for download progress reporting:
+
+```rust
+use crate::progress::{create_progress_bar, format_progress};
+
+// Example usage
+let progress_bar = create_progress_bar(content_length);
+progress_bar.set_position(downloaded);
+```
+
+### Handling Background Mode
+
+Check `args.background` to determine if your output should go to stdout or to a log file:
+
+```rust
+if args.background {
+    // Write to log file
+} else {
+    // Write to stdout
+}
+```
+
+## Testing Your Implementation
+
+1. Build the project: `cargo build`
+2. Test your flag: `./target/debug/wget --your-flag https://example.com`
+
+## Tips for Specific Flags
+
+### -B (Background) Flag
+
+This is mostly implemented in the `logger.rs` module, but you might need to redirect your output.
+
+### -O (Output File) and -P (Directory) Flags
+
+Check the downloader module for examples of path handling.
+
+### --rate-limit Flag
+
+Look at the rate limiting implementation in the downloader module.
+
+### -i (Input File) Flag
+
+This requires parsing a file and downloading multiple URLs in parallel.
+
+## Putting It All Together
+
+Once everyone's flags are implemented, we'll merge all the changes together. Make sure your implementation follows the pattern of the existing code for consistency.
+
+If you have any questions about how to integrate your part, please don't hesitate to ask!
