@@ -437,34 +437,51 @@ fn calculate_directory_path(url: &Url, base_url: &Url, base_dir: &Path) -> Resul
 fn get_file_path(url: &Url, dir_path: &Path) -> Result<(String, PathBuf), Box<dyn Error + Send + Sync>> {
     let path = url.path();
     
-    // Extract the file name from the path
-    let file_name = path.split('/').last().unwrap_or("index.html");
-    let file_name = if file_name.is_empty() { "index.html" } else { file_name };
-    
-    // Create the full file path
+    // First, create the base directory path
     let mut file_path = dir_path.to_path_buf();
     
-    // Split the path into components
-    let path_components: Vec<&str> = path.split('/').collect();
-    
-    // If we have a path with multiple components, create subdirectories
-    if path_components.len() > 1 {
-        for component in &path_components[0..path_components.len() - 1] {
-            if !component.is_empty() {
-                file_path.push(component);
+    // Handle paths ending with slash differently
+    if path == "/" || path.is_empty() {
+        // Root path - just use index.html in the root directory
+        file_path.push("index.html");
+        return Ok(("index.html".to_string(), file_path));
+    } else if path.ends_with('/') {
+        // Path ends with slash - treat as directory
+        // Create all directories in the path
+        let trimmed_path = path.trim_start_matches('/').trim_end_matches('/');
+        if !trimmed_path.is_empty() {
+            for component in trimmed_path.split('/') {
+                if !component.is_empty() {
+                    file_path.push(component);
+                }
             }
         }
-    }
-    
-    // Add the file name
-    file_path.push(file_name);
-    
-    // If the path ends with a slash, assume it's a directory and add index.html
-    if path.ends_with('/') || file_name.is_empty() {
+        // Add index.html at the end
         file_path.push("index.html");
-        Ok(("index.html".to_string(), file_path))
+        return Ok(("index.html".to_string(), file_path));
     } else {
-        Ok((file_name.to_string(), file_path))
+        // Regular file path
+        // Split into directory components and filename
+        let components: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+        let file_name = components.last().unwrap_or(&"index.html");
+        
+        // Add all directories except the last component (which is the filename)
+        if components.len() > 1 {
+            for component in &components[0..components.len() - 1] {
+                if !component.is_empty() {
+                    file_path.push(component);
+                }
+            }
+        }
+        
+        // Add the filename
+        if !file_name.is_empty() {
+            file_path.push(file_name);
+            return Ok((file_name.to_string(), file_path));
+        } else {
+            file_path.push("index.html");
+            return Ok(("index.html".to_string(), file_path));
+        }
     }
 }
 
