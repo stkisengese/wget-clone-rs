@@ -398,33 +398,40 @@ fn is_same_domain(url1: &Url, url2: &Url) -> bool {
 
 /// Calculate the directory path for a URL
 fn calculate_directory_path(url: &Url, base_url: &Url, base_dir: &Path) -> Result<PathBuf, Box<dyn Error + Send + Sync>> {
-    let path = url.path();
+    // For the base URL, just return the base directory
+    if url.as_str() == base_url.as_str() {
+        return Ok(base_dir.to_path_buf());
+    }
     
-    // Remove the common prefix between base_url and url
-    let base_path = base_url.path();
-    let relative_path = if path.starts_with(base_path) && base_path != "/" {
-        &path[base_path.len()..]
-    } else {
-        path
-    };
-    
-    // Combine with the base directory
+    // Always start with the base directory
     let mut full_path = base_dir.to_path_buf();
     
-    // Handle the path components
-    if relative_path.starts_with('/') {
-        // For absolute paths, append to the base directory
-        let path_components: Vec<&str> = relative_path[1..].split('/').collect();
-        if path_components.len() > 1 {
-            for component in &path_components[0..path_components.len() - 1] {
-                full_path.push(component);
-            }
-        }
+    // For other URLs, determine the relative path
+    let url_path = url.path();
+    
+    // If the URL path is just "/" or empty, return the base directory
+    if url_path == "/" || url_path.is_empty() {
+        return Ok(full_path);
+    }
+    
+    // Otherwise, handle the path components
+    let path_without_leading_slash = url_path.trim_start_matches('/');
+    
+    // If the path has filename part (doesn't end with slash), we need the directory part only
+    let dir_part = if url_path.ends_with('/') {
+        path_without_leading_slash.trim_end_matches('/')
     } else {
-        // For relative paths
-        let path_components: Vec<&str> = relative_path.split('/').collect();
-        if path_components.len() > 1 {
-            for component in &path_components[0..path_components.len() - 1] {
+        // Get the directory part by removing the filename
+        match path_without_leading_slash.rfind('/') {
+            Some(index) => &path_without_leading_slash[..index],
+            None => "", // No directory part
+        }
+    };
+    
+    // If there's a directory part, add it to the path
+    if !dir_part.is_empty() {
+        for component in dir_part.split('/') {
+            if !component.is_empty() {
                 full_path.push(component);
             }
         }
