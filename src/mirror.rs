@@ -14,7 +14,7 @@ use regex::Regex;
 use tokio::sync::Semaphore;
 use async_recursion::async_recursion;
 use std::sync::{Arc, Mutex};
-use futures::future::join_all;
+// use futures::future::join_all;
 use tokio::time::timeout;
 use std::time::Duration;
 
@@ -80,116 +80,143 @@ pub async fn mirror_website(args: &WgetArgs) -> Result<(), Box<dyn Error>> {
     spinner.set_message("Mirroring website...");
 
     let downloaded_files = Arc::new(Mutex::new(Vec::new()));
-    let tasks = Arc::new(Mutex::new(Vec::new()));
+    let active_tasks = Arc::new(Mutex::new(Vec::new()));
+    let mut completed_urls = 0;
 
-    // Process queue until empty
-    while !queue.lock().unwrap().is_empty() {
-        // Get next URL from queue
-        let (url, dir_path) = {
+    // Process queue until empty and all tasks are completed
+    while {
+        let queue_empty = queue.lock().unwrap().is_empty();
+        let tasks_empty = active_tasks.lock().unwrap().is_empty();
+        // Continue loop if either queue has items or tasks are running
+        !queue_empty || !tasks_empty
+    } {
+        // Get next URL from queue if available
+        let url_info = {
             let mut queue_lock = queue.lock().unwrap();
-            match queue_lock.pop_front() {
-                Some(item) => item,
-                None => break,
-            }
+            queue_lock.pop_front()
         };
         
-        // Skip if we've already visited this URL
-        let url_string = url.to_string();
-        {
-            let mut visited_set = visited.lock().unwrap();
-            if visited_set.contains(&url_string) {
-                continue;
-            }
-            visited_set.insert(url_string.clone());
-        }
-        
-        // Update spinner
-        spinner.set_message(format!("Processing: {}", url));
-        
-        // Check if we should exclude this path
-        let path = url.path();
-        let should_exclude = exclude_paths.iter().any(|exclude| path.starts_with(exclude));
-        if should_exclude {
-            log_message(&format!("Skipping excluded path: {}", path), args.background);
-            continue;
-        }
-        
-        // Get a permit from the semaphore
-        let permit = semaphore.clone().acquire_owned().await?;
-        
-        // Clone necessary data for the task
-        let client_clone = client.clone();
-        let base_url_clone = base_url.clone();
-        let reject_patterns_clone = reject_patterns.clone();
-        let exclude_paths_clone = exclude_paths.clone();
-        let visited_clone = visited.clone();
-        let downloaded_files_clone = downloaded_files.clone();
-        let queue_clone = queue.clone();
-        let background = args.background;
-        let convert_links = args.convert_links;
-        
-        // Spawn a task to process this URL
-        let task = tokio::spawn(async move {
-            // Use timeout for the request
-            let result = timeout(
-                Duration::from_secs(CONNECTION_TIMEOUT),
-                process_url(
-                    &client_clone,
-                    &url,
-                    &dir_path,
-                    &base_url_clone,
-                    &reject_patterns_clone,
-                    &exclude_paths_clone,
-                    visited_clone.clone(),
-                    queue_clone,
-                    convert_links,
-                    downloaded_files_clone,
-                )
-            ).await;
-            
-            match result {
-                Ok(Ok(_)) => {},
-                Ok(Err(e)) => {
-                    log_message(&format!("Error processing {}: {}", url, e), background);
-                },
-                Err(_) => {
-                    log_message(&format!("Timeout processing {}", url), background);
+        if let Some((url, dir_path)) = url_info {
+            // Skip if we've already visited this URL
+            let url_string = url.to_string();
+            let skip = {
+                let mut visited_set = visited.lock().unwrap();
+                if visited_set.contains(&url_string) {
+                    println!("[Debug] URL {} already visited, skipping", url_string);
+                    true
+                } else {
+                    visited_set.insert(url_string.clone());
+                    false
                 }
-            }
-            
-            // Explicitly drop the permit when we're done
-            drop(permit);
-        });
-        
-        // Store the task handle
-        tasks.lock().unwrap().push(task);
-        
-        // If we have too many tasks, wait for some to complete
-        if tasks.lock().unwrap().len() >= MAX_CONCURRENT_REQUESTS * 2 {
-            let tasks_to_await = {
-                let mut tasks_lock = tasks.lock().unwrap();
-                let drain_count = tasks_lock.len() / 2;
-                tasks_lock.drain(0..drain_count).collect::<Vec<_>>()
             };
             
-            // Wait for the tasks to complete
-            for task_result in join_all(tasks_to_await).await {
-                if let Err(e) = task_result {
+            if skip {
+                continue;
+            }
+            
+            // Update spinner
+            spinner.set_message(format!("Processing: {}", url));
+            
+            // Check if we should exclude this path
+            let path = url.path();
+            let should_exclude = exclude_paths.iter().any(|exclude| path.starts_with(exclude));
+            if should_exclude {
+                log_message(&format!("Skipping excluded path: {}", path), args.background);
+                continue;
+            }
+            
+            // Get a permit from the semaphore
+            match semaphore.clone().acquire_owned().await {
+                Ok(permit) => {
+                    // Clone necessary data for the task
+                    let client_clone = client.clone();
+                    let base_url_clone = base_url.clone();
+                    let reject_patterns_clone = reject_patterns.clone();
+                    let exclude_paths_clone = exclude_paths.clone();
+                    let visited_clone = visited.clone();
+                    let downloaded_files_clone = downloaded_files.clone();
+                    let queue_clone = queue.clone();
+                    let background = args.background;
+                    let convert_links = args.convert_links;
+                    
+                    // Spawn a task to process this URL
+                    let task = tokio::spawn(async move {
+                        println!("[Debug] Starting task for URL: {}", url);
+                        // Use timeout for the request
+                        let result = timeout(
+                            Duration::from_secs(CONNECTION_TIMEOUT),
+                            process_url(
+                                &client_clone,
+                                &url,
+                                &dir_path,
+                                &base_url_clone,
+                                &reject_patterns_clone,
+                                &exclude_paths_clone,
+                                visited_clone.clone(),
+                                queue_clone,
+                                convert_links,
+                                downloaded_files_clone,
+                            )
+                        ).await;
+                        
+                        match result {
+                            Ok(Ok(_)) => {
+                                println!("[Debug] Successfully processed URL: {}", url);
+                            },
+                            Ok(Err(e)) => {
+                                log_message(&format!("Error processing {}: {}", url, e), background);
+                            },
+                            Err(_) => {
+                                log_message(&format!("Timeout processing {}", url), background);
+                            }
+                        }
+                        
+                        // Explicitly drop the permit when we're done
+                        drop(permit);
+                    });
+                    
+                    // Store the task handle
+                    active_tasks.lock().unwrap().push(task);
+                },
+                Err(e) => {
+                    log_message(&format!("Failed to acquire semaphore: {}", e), args.background);
+                }
+            }
+        }
+        
+        // Check for completed tasks
+        let mut completed_tasks = Vec::new();
+        {
+            let mut tasks = active_tasks.lock().unwrap();
+            let mut i = 0;
+            while i < tasks.len() {
+                if tasks[i].is_finished() {
+                    completed_tasks.push(tasks.remove(i));
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        
+        // Process completed tasks
+        for task in completed_tasks {
+            match task.await {
+                Ok(_) => {
+                    completed_urls += 1;
+                    spinner.set_message(format!("Processed {} URLs, {} in queue, {} active", 
+                        completed_urls, 
+                        queue.lock().unwrap().len(),
+                        active_tasks.lock().unwrap().len()));
+                },
+                Err(e) => {
                     log_message(&format!("Task error: {}", e), args.background);
                 }
             }
         }
-    }
-    
-    // Wait for all remaining tasks to complete
-    let remaining_tasks = {
-        let mut tasks_lock = tasks.lock().unwrap();
-        std::mem::take(&mut *tasks_lock)
-    };
-    
-    for task_result in join_all(remaining_tasks).await {
-        if let Err(e) = task_result {
-            log_message(&format!("Task error: {}", e), args.background);
+        
+        // If queue is empty but tasks are still running, wait a bit
+        if queue.lock().unwrap().is_empty() && !active_tasks.lock().unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
     
@@ -207,11 +234,10 @@ pub async fn mirror_website(args: &WgetArgs) -> Result<(), Box<dyn Error>> {
         }
     }
     
-    log_message(&format!("Website mirroring completed: {}", url), args.background);
+    log_message(&format!("Website mirroring completed: {}. Downloaded {} URLs.", url, completed_urls), args.background);
     
     Ok(())
 }
-
 /// Process a single URL in the mirroring process
 #[async_recursion]
 async fn process_url(
@@ -439,7 +465,6 @@ fn calculate_directory_path(url: &Url, base_url: &Url, base_dir: &Path) -> Resul
     
     Ok(full_path)
 }
-
 /// Determine file name and path from a URL
 fn get_file_path(url: &Url, dir_path: &Path) -> Result<(String, PathBuf), Box<dyn Error + Send + Sync>> {
     let path = url.path();
